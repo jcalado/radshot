@@ -6,10 +6,15 @@
 
 A lightweight Windows screenshot capture tool for the Radtel RT-4D radio display. Captures the 128x64 monochrome LCD screen via serial connection.
 
-## Screenshot
+> [!CAUTION]
+> This software will ONLY work correctly on screenshot-enabled firmware builds.
 
-<!-- Add a screenshot of the application here -->
+> [!IMPORTANT]
+> Please don't ask for real time refresh of the display, this would cause a massive slowdown.
+
 ![RadShot Application](docs/screenshot.jpg)
+
+
 
 ## Features
 
@@ -44,6 +49,6 @@ This compiles the application using MSVC (Visual Studio Build Tools required).
 4. Click **Take Screenshot** to capture the radio display
 5. Use **Save** to export as PNG or **Copy** to copy to clipboard
 
-## License
+## Support
 
-MIT License
+If you like my work, you can support me at [ko-fi.com/jcalado](https://ko-fi.com/jcalado)
