@@ -1,0 +1,6 @@
+// RadShot Resource File
+// Application icon - ID 1 is used as the main application icon
+
+#define IDI_ICON1 1
+
+IDI_ICON1 ICON "radshot.ico"
