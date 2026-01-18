@@ -1,0 +1,57 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup MSVC
+        uses: ilammy/msvc-dev-cmd@v1.13.0
+        with:
+          arch: x64
+
+      - name: Compile resources
+        shell: cmd
+        run: rc /nologo /fo radshot.res radshot.rc
+
+      - name: Build executable
+        shell: cmd
+        run: |
+          cl /nologo /O1 /GS- /GL /DNDEBUG /D_CRT_SECURE_NO_WARNINGS /EHsc /MT /I. /Iimgui /wd4244 /wd4267 /wd4305 ^
+            radshot.cpp ^
+            imgui/imgui.cpp imgui/imgui_draw.cpp imgui/imgui_tables.cpp imgui/imgui_widgets.cpp ^
+            imgui/imgui_impl_win32.cpp imgui/imgui_impl_opengl3.cpp ^
+            /Fe:radshot.exe ^
+            /link /LTCG /OPT:REF /OPT:ICF /SUBSYSTEM:WINDOWS ^
+            opengl32.lib user32.lib gdi32.lib setupapi.lib advapi32.lib comdlg32.lib shell32.lib ole32.lib ^
+            radshot.res
+
+      - name: Verify build
+        shell: pwsh
+        run: |
+          if (!(Test-Path radshot.exe)) {
+            Write-Error "Build failed - radshot.exe not found"
+            exit 1
+          }
+          $size = (Get-Item radshot.exe).Length
+          Write-Host "Build successful: radshot.exe ($size bytes)"
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: RadShot ${{ github.ref_name }}
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+          files: radshot.exe
