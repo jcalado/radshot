@@ -168,9 +168,90 @@ struct AppState {
     bool show_clear_popup = false;
     bool show_exit_popup = false;
     bool pending_close = false;
+
+    // Settings persistence
+    char last_save_directory[MAX_PATH] = {0};
+    char last_port_name[32] = {0};
+    int window_x = CW_USEDEFAULT;
+    int window_y = CW_USEDEFAULT;
 };
 
 static AppState g_state;
+
+// =============================================================================
+// Settings Persistence
+// =============================================================================
+
+static void GetSettingsPath(char* path, size_t pathSize) {
+    char exePath[MAX_PATH];
+    GetModuleFileNameA(nullptr, exePath, MAX_PATH);
+
+    // Replace .exe with .ini
+    char* dot = strrchr(exePath, '.');
+    if (dot) {
+        strcpy(dot, ".ini");
+    } else {
+        strcat(exePath, ".ini");
+    }
+    strncpy(path, exePath, pathSize - 1);
+    path[pathSize - 1] = 0;
+}
+
+static void LoadSettings() {
+    char iniPath[MAX_PATH];
+    GetSettingsPath(iniPath, sizeof(iniPath));
+
+    FILE* f = fopen(iniPath, "r");
+    if (!f) return;
+
+    char line[512];
+    while (fgets(line, sizeof(line), f)) {
+        // Remove newline
+        char* nl = strchr(line, '\n');
+        if (nl) *nl = 0;
+        char* cr = strchr(line, '\r');
+        if (cr) *cr = 0;
+
+        char* eq = strchr(line, '=');
+        if (!eq) continue;
+        *eq = 0;
+        const char* key = line;
+        const char* value = eq + 1;
+
+        if (strcmp(key, "window_x") == 0) {
+            g_state.window_x = atoi(value);
+        } else if (strcmp(key, "window_y") == 0) {
+            g_state.window_y = atoi(value);
+        } else if (strcmp(key, "window_width") == 0) {
+            int w = atoi(value);
+            if (w >= 400 && w <= 4096) g_state.window_width = w;
+        } else if (strcmp(key, "window_height") == 0) {
+            int h = atoi(value);
+            if (h >= 300 && h <= 4096) g_state.window_height = h;
+        } else if (strcmp(key, "last_port") == 0) {
+            strncpy(g_state.last_port_name, value, sizeof(g_state.last_port_name) - 1);
+        } else if (strcmp(key, "last_save_directory") == 0) {
+            strncpy(g_state.last_save_directory, value, sizeof(g_state.last_save_directory) - 1);
+        }
+    }
+    fclose(f);
+}
+
+static void SaveSettings() {
+    char iniPath[MAX_PATH];
+    GetSettingsPath(iniPath, sizeof(iniPath));
+
+    FILE* f = fopen(iniPath, "w");
+    if (!f) return;
+
+    fprintf(f, "window_x=%d\n", g_state.window_x);
+    fprintf(f, "window_y=%d\n", g_state.window_y);
+    fprintf(f, "window_width=%d\n", g_state.window_width);
+    fprintf(f, "window_height=%d\n", g_state.window_height);
+    fprintf(f, "last_port=%s\n", g_state.last_port_name);
+    fprintf(f, "last_save_directory=%s\n", g_state.last_save_directory);
+    fclose(f);
+}
 
 // =============================================================================
 // Bitmap Processing (matching Python implementation)
@@ -329,6 +410,7 @@ bool SerialConnect(const char* portName) {
     PurgeComm(g_state.serial_handle, PURGE_RXCLEAR | PURGE_TXCLEAR);
 
     g_state.is_connected = true;
+    strncpy(g_state.last_port_name, portName, sizeof(g_state.last_port_name) - 1);
     snprintf(g_state.status_message, sizeof(g_state.status_message),
              "Connected to %s", portName);
     return true;
@@ -412,7 +494,7 @@ void UpdateCapture() {
 // File Operations
 // =============================================================================
 
-bool BrowseForFolder(char* path, size_t pathSize) {
+bool BrowseForFolder(char* path, size_t pathSize, const char* startDir) {
     CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
 
     IFileDialog* pfd = nullptr;
@@ -422,6 +504,17 @@ bool BrowseForFolder(char* path, size_t pathSize) {
         DWORD options;
         pfd->GetOptions(&options);
         pfd->SetOptions(options | FOS_PICKFOLDERS);
+
+        // Set initial folder if provided
+        if (startDir && startDir[0] != 0) {
+            wchar_t startDirW[MAX_PATH];
+            MultiByteToWideChar(CP_UTF8, 0, startDir, -1, startDirW, MAX_PATH);
+            IShellItem* psiFolder = nullptr;
+            if (SUCCEEDED(SHCreateItemFromParsingName(startDirW, nullptr, IID_PPV_ARGS(&psiFolder)))) {
+                pfd->SetFolder(psiFolder);
+                psiFolder->Release();
+            }
+        }
 
         if (SUCCEEDED(pfd->Show(g_state.hwnd))) {
             IShellItem* psi;
@@ -455,7 +548,8 @@ void SaveSelected() {
     if (g_state.selected_screenshot < 0) return;
 
     char folder[MAX_PATH] = {0};
-    if (BrowseForFolder(folder, sizeof(folder))) {
+    if (BrowseForFolder(folder, sizeof(folder), g_state.last_save_directory)) {
+        strncpy(g_state.last_save_directory, folder, sizeof(g_state.last_save_directory) - 1);
         Screenshot* ss = g_state.screenshots[g_state.selected_screenshot];
         if (SaveScreenshot(ss, folder)) {
             snprintf(g_state.status_message, sizeof(g_state.status_message),
@@ -466,11 +560,78 @@ void SaveSelected() {
     }
 }
 
+void CopyToClipboard() {
+    if (g_state.selected_screenshot < 0) return;
+
+    Screenshot* ss = g_state.screenshots[g_state.selected_screenshot];
+    int w = DISPLAY_WIDTH * PREVIEW_SCALE;
+    int h = DISPLAY_HEIGHT * PREVIEW_SCALE;
+
+    // Calculate DIB size (BGR, 24-bit, DWORD-aligned rows)
+    int rowBytes = ((w * 3 + 3) / 4) * 4;
+    size_t dibSize = sizeof(BITMAPINFOHEADER) + rowBytes * h;
+
+    HGLOBAL hMem = GlobalAlloc(GMEM_MOVEABLE, dibSize);
+    if (!hMem) {
+        strcpy(g_state.status_message, "Failed to allocate clipboard memory");
+        return;
+    }
+
+    uint8_t* pMem = (uint8_t*)GlobalLock(hMem);
+    if (!pMem) {
+        GlobalFree(hMem);
+        strcpy(g_state.status_message, "Failed to lock clipboard memory");
+        return;
+    }
+
+    // Fill BITMAPINFOHEADER
+    BITMAPINFOHEADER* bih = (BITMAPINFOHEADER*)pMem;
+    memset(bih, 0, sizeof(BITMAPINFOHEADER));
+    bih->biSize = sizeof(BITMAPINFOHEADER);
+    bih->biWidth = w;
+    bih->biHeight = h;  // Positive = bottom-up DIB
+    bih->biPlanes = 1;
+    bih->biBitCount = 24;
+    bih->biCompression = BI_RGB;
+
+    // Convert RGBA to BGR and flip vertically
+    uint8_t* pixels = pMem + sizeof(BITMAPINFOHEADER);
+    for (int y = 0; y < h; y++) {
+        int srcY = h - 1 - y;  // Flip: DIB is bottom-up
+        for (int x = 0; x < w; x++) {
+            int srcIdx = (srcY * w + x) * 4;
+            int dstIdx = y * rowBytes + x * 3;
+            pixels[dstIdx + 0] = ss->rgba_preview[srcIdx + 2];  // B
+            pixels[dstIdx + 1] = ss->rgba_preview[srcIdx + 1];  // G
+            pixels[dstIdx + 2] = ss->rgba_preview[srcIdx + 0];  // R
+        }
+    }
+
+    GlobalUnlock(hMem);
+
+    if (!OpenClipboard(g_state.hwnd)) {
+        GlobalFree(hMem);
+        strcpy(g_state.status_message, "Failed to open clipboard");
+        return;
+    }
+
+    EmptyClipboard();
+    if (SetClipboardData(CF_DIB, hMem)) {
+        snprintf(g_state.status_message, sizeof(g_state.status_message),
+                 "Copied %s to clipboard", ss->name);
+    } else {
+        GlobalFree(hMem);
+        strcpy(g_state.status_message, "Failed to set clipboard data");
+    }
+    CloseClipboard();
+}
+
 void SaveAll() {
     if (g_state.screenshots.empty()) return;
 
     char folder[MAX_PATH] = {0};
-    if (BrowseForFolder(folder, sizeof(folder))) {
+    if (BrowseForFolder(folder, sizeof(folder), g_state.last_save_directory)) {
+        strncpy(g_state.last_save_directory, folder, sizeof(g_state.last_save_directory) - 1);
         int saved = 0;
         for (Screenshot* ss : g_state.screenshots) {
             if (SaveScreenshot(ss, folder)) saved++;
@@ -660,6 +821,11 @@ void RenderUI() {
         if (ImGui::Button("Save")) {
             SaveSelected();
         }
+
+        ImGui::SameLine();
+        if (ImGui::Button("Copy")) {
+            CopyToClipboard();
+        }
     } else {
         ImGui::TextDisabled("No screenshot selected");
     }
@@ -810,6 +976,11 @@ LRESULT WINAPI WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         }
         return 0;
 
+    case WM_MOVE:
+        g_state.window_x = (int)(short)LOWORD(lParam);
+        g_state.window_y = (int)(short)HIWORD(lParam);
+        return 0;
+
     case WM_CLOSE:
         if (!g_state.screenshots.empty()) {
             g_state.show_exit_popup = true;
@@ -832,6 +1003,9 @@ LRESULT WINAPI WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 // =============================================================================
 
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
+    // Load saved settings
+    LoadSettings();
+
     // Load application icon from resources (ID 1 defined in radshot.rc)
     HICON hIcon = LoadIcon(hInstance, MAKEINTRESOURCE(1));
     HICON hIconSm = (HICON)LoadImage(hInstance, MAKEINTRESOURCE(1), IMAGE_ICON,
@@ -859,7 +1033,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
     g_state.hwnd = CreateWindowExW(
         0, L"RadShotClass", titleW,
         WS_OVERLAPPEDWINDOW,
-        CW_USEDEFAULT, CW_USEDEFAULT, g_state.window_width, g_state.window_height,
+        g_state.window_x, g_state.window_y, g_state.window_width, g_state.window_height,
         nullptr, nullptr, hInstance, nullptr
     );
 
@@ -888,6 +1062,16 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
 
     // Initial port enumeration
     EnumerateComPorts();
+
+    // Restore saved COM port selection
+    if (g_state.last_port_name[0] != 0) {
+        for (int i = 0; i < (int)g_state.com_ports.size(); i++) {
+            if (g_state.com_ports[i] == g_state.last_port_name) {
+                g_state.selected_port = i;
+                break;
+            }
+        }
+    }
 
     // Main loop
     while (g_state.running) {
@@ -921,6 +1105,9 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
         ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
         SwapBuffers(g_state.hdc);
     }
+
+    // Save settings before exiting
+    SaveSettings();
 
     // Cleanup
     ClearAll();
