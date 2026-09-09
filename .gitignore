@@ -1,0 +1,15 @@
+# Build output
+build/
+out/
+
+# CMake
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+
+# Compiled artifacts
+*.o
+*.obj
+*.exe
+*.pdb
+*.ilk

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Convert radshot.png to radshot.ico with multiple sizes for Windows application icon.
+Convert at168shot.png to at168shot.ico with multiple sizes for Windows application icon.
 Requires: pip install Pillow
 """
 
@@ -65,8 +65,8 @@ def create_ico(png_path: str, ico_path: str, sizes: list[int] = None):
 
 if __name__ == '__main__':
     script_dir = Path(__file__).parent
-    png_file = script_dir / 'radshot.png'
-    ico_file = script_dir / 'radshot.ico'
+    png_file = script_dir / 'at168shot.png'
+    ico_file = script_dir / 'at168shot.ico'
 
     print("Creating application icon...")
     create_ico(png_file, ico_file)
